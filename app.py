@@ -1,8 +1,10 @@
 import os
 import sys
 from enum import Enum
+from PyQt5 import QtCore 
+from PyQt5.QtCore import QThread 
+from PyQt5.QtCore import pyqtSignal
 from PyQt5 import uic
-from PyQt5 import QtCore
 from PyQt5 import QtGui
 from PyQt5.QtWidgets import *
 import RPi.GPIO as GPIO
@@ -12,13 +14,136 @@ import time
 # Relay is active low
 # 31 = Evalvecontrol 1 (KVL), 29 = Evalvecontrol 2 (KCL), 26 = Evalvecontrol 3 (Capacitor top), 24 = Evalvecontrol 4 (Inductor), 23 = Evalvecontrol 5 (Capacitor bottom)
 ValvePins = [22, 31, 29, 26, 24, 23]
-
+KVL_Flow_Pins = [15]
+KCL_Flow_Pins = [37, 38, 40]
+CAP_Flow_Pins = [18, 19]
+IND_Flow_Pins = [21]
 GPIO.setwarnings(False)
+
+# Everything GPIO related in terms of pins
+class BoardFunctions():
+    def setup():
+        global ValvePins
+        GPIO.setmode(GPIO.BOARD)
+        for i in range(0,6):
+            GPIO.setup( ValvePins[i] , GPIO.OUT, initial=GPIO.HIGH )
+    
+    def Turnoff():
+        global ValvePins
+        GPIO.output( ValvePins, GPIO.HIGH ) # all to high as relay is active low
+        GPIO.cleanup
+
+    # Setup for KVL mode
+    def KVL():
+        global ValvePins
+        GPIO.output( ValvePins[0], GPIO.LOW )
+        GPIO.output( ValvePins[1], GPIO.LOW )
+        print("In KVL state")
+
+    # Setup for KCL mode
+    def KCL():
+        global ValvePins
+        GPIO.output( ValvePins[0], GPIO.LOW )
+        GPIO.output( ValvePins[2], GPIO.LOW )
+        print("In KCL state")
+
+    # Setup for Capacitor mode
+    def Capacitor():
+        global ValvePins
+        GPIO.output( ValvePins[0], GPIO.LOW )
+        GPIO.output( ValvePins[3], GPIO.LOW )
+        GPIO.output( ValvePins[5], GPIO.LOW )
+        print("In Capacitor state")
+        time.sleep(5)
+        GPIO.output( ValvePins[5], GPIO.LOW )
+        GPIO.output( ValvePins[0], GPIO.HIGH )
+        GPIO.output( ValvePins[3], GPIO.HIGH )
+        time.sleep(9)
+        GPIO.output( ValvePins[5], GPIO.HIGH )
+
+    # Setup for Inductor mode
+    def Inductor():
+        global ValvePins
+        GPIO.output( ValvePins[0], GPIO.LOW )
+        GPIO.output( ValvePins[4], GPIO.LOW )
+        print("In Inductor state")
+        
+    def Idle_State():
+        GPIO.output( ValvePins[0], GPIO.HIGH )
+        GPIO.output( ValvePins[1], GPIO.HIGH )
+        GPIO.output( ValvePins[2], GPIO.HIGH )
+        GPIO.output( ValvePins[3], GPIO.HIGH )
+        GPIO.output( ValvePins[4], GPIO.HIGH )
+        GPIO.output( ValvePins[5], GPIO.LOW )
+        print("In Idle State")
+
+# everything water sensor realted for reading in water flow
+class Water_Sensor( QThread ):
+
+    change_current = pyqtSignal(str, str)
+
+    def __init__(self, Flow_pins, amt_of_pins, Type, Constant):
+        QThread.__init__(self)
+        self._is_running = True
+        self.Flow_pins = Flow_pins
+        self.amt_of_pins = amt_of_pins
+        self.Type = Type
+        self.Constant = Constant
+        
+    def _FlowSensor( self, amount_of_pins, Pins, Type, CON ):
+        for i in range(0, amount_of_pins):
+            rate_cnt=0
+            tot_cnt=0
+            minutes=0
+            constant= CON 
+            time_new=0.0
+            stop_time=0.0
+            gpio_last=2
+
+            for sec_mult in range(0,1):
+                time_new=time.time()+.5
+                rate_cnt=0              
+                while time.time() <= time_new:
+                    gpio_cur=GPIO.input(Pins[i])
+                    if gpio_cur !=gpio_last:
+                        rate_cnt+=1
+                        tot_cnt +=1
+                    else:
+                        rate_cnt=rate_cnt
+                        tot_cnt=tot_cnt
+                        
+                    gpio_last=gpio_cur
+            minutes+=1
+            print('\nFrequency',
+                    round(rate_cnt/2,4),'approximate')
+            print('Gallons/min',
+                    round(rate_cnt*constant,4),'approximate')
+            Gal = []
+            Gal = round(rate_cnt*constant,4)
+        self.change_current.emit(str(Gal), Type)
+        return
+
+    def __del__(self):
+        self.wait()
+
+    def stop(self):
+        self._is_running = False
+
+    # will conitnously run until a signal is sent from the UI terminating the thread
+    def run(self):
+        GPIO.setup( self.Flow_pins, GPIO.IN )
+        while self._is_running == True:
+            self._FlowSensor(self.amt_of_pins, self.Flow_pins, self.Type, self.Constant)
+        
+
+
+# eveything LED realted and control through this information
+# class LED_Control( QThread ):
+
 
 class Ui_MainWindow( QMainWindow ):
     def __init__( self ):
         super().__init__()
-
         self.width = 800
         self.height = 480
         self.init()
@@ -42,31 +167,53 @@ class Ui_MainWindow( QMainWindow ):
         # first see which page is selected
         # then executes the functions needed for what is selected
         page_number = main_window.stackedWidget.currentIndex()
-        
-                
-        def Change_Text( main_window, Text ):
-            if Text == "KVL":
-                main_window.Dyanmic_current_KVL.setText(Text)
-            elif Text == "KCL":
-                main_window.Dyanmic_current_KVL.setText(Text)
-            elif Text == "IND":
-                main_window.Dyanmic_current_KVL.setText(Text)
-            elif Text == "CAP":
-                main_window.Dyanmic_current_KVL.setText(Text)
+           
+        def Update_Current(Text, Type):
+            HTML = '<html><head/><body><p align="center"><span style=" font-size:12pt; font-weight:600;">' + Text + ' (A)' + '</span></p></body></html>'
+            if Type == "KVL":
+                main_window.Dyanmic_current_KVL.setText( HTML )
+            elif Type == "KCL":
+                main_window.Dynamic_current_KCL.setText( HTML )
+            elif Type == "IND":
+                main_window.Dyanmic_Current_Inductor.setText( HTML )
+            elif Type == "CAP":
+                main_window.Dynamic_Current_Capacitor.setText( HTML )
+            else:
+                print("There was no \'Type\' found.")
+                return
+
 
         if( page_number == Page.KVL_ON.value ):
-            Current = BoardFunctions.KVL()
-            Change_Text( main_window, Current )
+            BoardFunctions.KVL()
+            self.thread = Water_Sensor( KVL_Flow_Pins, 1, "KVL", 0.02 )
+            self.thread.start()
+            self.thread.change_current.connect(Update_Current)
         elif( page_number == Page.KCL_ON.value ):
+            # maybe have three threads here for the all three flow readers to be reading at the same time
             BoardFunctions.KCL()
+            self.thread = Water_Sensor( KCL_Flow_Pins, 3, "KCL", 0.2 )
+            self.thread.start()
+            self.thread.change_current.connect(Update_Current)
         elif( page_number == Page.CAP_ON.value ):
+            self.thread = Water_Sensor( CAP_Flow_Pins, 2, "CAP", 0.1 )
+            self.thread.start()
+            self.thread.change_current.connect(Update_Current)
             BoardFunctions.Capacitor()
         elif( page_number == Page.IND_ON.value ):
             BoardFunctions.Inductor()
+            self.thread = Water_Sensor( IND_Flow_Pins, 1, "IND", 0.1 )
+            self.thread.start()
+            self.thread.change_current.connect(Update_Current)
         else:
+            self.Stop_thread()
             BoardFunctions.Idle_State()
-
             
+    # Stops the thread safely (Will not stop thread otherwise, please leave in or there will be lots of issues)    
+    def Stop_thread(self):
+        self.thread.stop()
+        self.thread.quit()
+        self.thread.wait()
+
     # initalize actions to occur from user
     def add_functionality( self, main_window ):
         self.init_labels( main_window )
@@ -80,7 +227,7 @@ class Ui_MainWindow( QMainWindow ):
         clickable( main_window.Inductor_picture ).connect( self.label_inductor )
         clickable( main_window.Inductor_label ).connect( self.label_inductor) 
         clickable( main_window.KCL_picture ).connect( self.label_KCL )
-        clickable( main_window.KCL_label ).connect( self.label_KCL)
+        clickable( main_window.KCL_label ).connect( self.label_KCL )
         clickable( main_window.KVL_picture ).connect( self.label_KVL ) 
         clickable( main_window.KVL_label ).connect( self.label_KVL )
 
@@ -117,6 +264,7 @@ class Ui_MainWindow( QMainWindow ):
 
     def push_button_back( self, main_window ):
         main_window.stackedWidget.setCurrentIndex( Page.Main_Page.value )
+        self.start( main_window )
 
     def push_button_KVL_start( self, main_window ):
         main_window.stackedWidget.setCurrentIndex( Page.KVL_ON.value )
@@ -179,114 +327,10 @@ def clickable( widget ):
     widget.installEventFilter( filter )
     return filter.clicked
 
-
-
-class BoardFunctions():
-    # Pins used for Valves
-    def setup():
-        global ValvePins
-        GPIO.setmode(GPIO.BOARD)
-        for i in range(0,6):
-            GPIO.setup( ValvePins[i] , GPIO.OUT, initial=GPIO.HIGH )
-    
-    def Turnoff():
-        global ValvePins
-        GPIO.output( ValvePins, GPIO.HIGH )
-        GPIO.cleanup
-
-    # Setup for KVL mode
-    def KVL():
-        global ValvePins
-        FlowPins = [15] 
-        GPIO.output( ValvePins[0], GPIO.LOW )
-        GPIO.output( ValvePins[1], GPIO.LOW )
-        print("In KVL state")
-        KVL = "KVL"
-        Current = BoardFunctions.FlowSensor( 1, FlowPins, KVL, 0.042 )
-        return Current
-        # Code here for outputing current information and LED output
-
-    # Setup for KCL mode
-    def KCL():
-        global ValvePins
-        FlowPins = [37, 38, 40]
-        GPIO.output( ValvePins[0], GPIO.LOW )
-        GPIO.output( ValvePins[2], GPIO.LOW )
-        print("In KCL state")
-        KCL = "KCL"
-        Currents = BoardFunctions.FlowSensor( 3, FlowPins, KCL, 0.2 )
-        return Currents
-    # Setup for Capacitor mode
-    def Capacitor():
-        global ValvePins
-        # Idle_State( False )
-        GPIO.output( ValvePins[0], GPIO.LOW )
-        GPIO.output( ValvePins[3], GPIO.LOW )
-        GPIO.output( ValvePins[5], GPIO.LOW )
-        print("In Capacitor state")
-        time.sleep(5)
-        GPIO.output( ValvePins[5], GPIO.LOW )
-        GPIO.output( ValvePins[0], GPIO.HIGH )
-        GPIO.output( ValvePins[3], GPIO.HIGH )
-        time.sleep(9)
-        GPIO.output( ValvePins[5], GPIO.HIGH )
-        # Should both the bottom and top valve be open at the begining, just the top valve open? This needs to be decided
-
-    # Setup for Inductor mode
-    def Inductor():
-        global ValvePins
-        # Idle_State( State )
-        GPIO.output( ValvePins[0], GPIO.LOW )
-        GPIO.output( ValvePins[4], GPIO.LOW )        # Code here for outputing current information and LED output
-        print("In Inductor state")
-        
-    def Idle_State():
-        GPIO.output( ValvePins[0], GPIO.HIGH )
-        GPIO.output( ValvePins[1], GPIO.HIGH )
-        GPIO.output( ValvePins[2], GPIO.HIGH )
-        GPIO.output( ValvePins[3], GPIO.HIGH )
-        GPIO.output( ValvePins[4], GPIO.HIGH )
-        GPIO.output( ValvePins[5], GPIO.LOW )
-        print("In Idle State")
-
-    def FlowSensor( amount_of_pins, Pins, Type, CON ):
-        time.sleep(5)
-        for i in range(0, amount_of_pins):
-            GPIO.setup(Pins[i],GPIO.IN)
-            rate_cnt=0
-            tot_cnt=0
-            minutes=0
-            constant= CON 
-            time_new=0.0
-            stop_time=0.0
-            gpio_last=2
-
-            for sec_mult in range(0,1):
-                time_new=time.time()+.5
-                rate_cnt=0              
-                while time.time() <= time_new:
-                    gpio_cur=GPIO.input(Pins[i])
-                    if gpio_cur !=gpio_last:
-                        rate_cnt+=1
-                        tot_cnt +=1
-                    else:
-                        rate_cnt=rate_cnt
-                        tot_cnt=tot_cnt
-                        
-                    gpio_last=gpio_cur
-            minutes+=1
-            print('\nFrequency',
-                    round(rate_cnt/2,4),'approximate')
-            print('Gallons/min',
-                    round(rate_cnt*constant,4),'approximate')
-            Gal = []
-            Gal = round(rate_cnt*constant,4)
-        return str(Gal)
-
 # Handles everything for to launch the GUI
 def main():
-    BoardFunctions.setup()
-    app = QApplication( sys.argv )
+    BoardFunctions.setup()          # Setup board to properly turn on the pins to the right mode
+    app = QApplication( sys.argv ) 
     window = Ui_MainWindow()
     sys.exit(app.exec_())
 
