@@ -54,7 +54,7 @@ class BoardFunctions():
         GPIO.output( ValvePins[3], GPIO.LOW )
         GPIO.output( ValvePins[5], GPIO.LOW )
         print("In Capacitor state")
-        time.sleep(5)
+        time.sleep(7)
         GPIO.output( ValvePins[5], GPIO.LOW )
         GPIO.output( ValvePins[0], GPIO.HIGH )
         GPIO.output( ValvePins[3], GPIO.HIGH )
@@ -136,6 +136,32 @@ class Water_Sensor( QThread ):
             self._FlowSensor(self.amt_of_pins, self.Flow_pins, self.Type, self.Constant)
         
 
+class Capacitor_Thread( QThread ):
+
+    def __init__(self, Pins):
+        QThread.__init__(self)
+        self.pins = Pins
+
+    def __del__(self):
+        self.wait()
+
+    def stop(self):
+        self._is_running = False
+
+    def _Capacitor(self):
+        GPIO.output( self.pins[0], GPIO.LOW )
+        GPIO.output( self.pins[3], GPIO.LOW )
+        GPIO.output( self.pins[5], GPIO.LOW )
+        print("In Capacitor state")
+        time.sleep(7)
+        GPIO.output( self.pins[5], GPIO.LOW )
+        GPIO.output( self.pins[0], GPIO.HIGH )
+        GPIO.output( self.pins[3], GPIO.HIGH )
+        time.sleep(9)
+        GPIO.output( self.pins[5], GPIO.HIGH )
+
+    def run(self):
+        self._Capacitor()
 
 # eveything LED realted and control through this information
 # class LED_Control( QThread ):
@@ -195,10 +221,11 @@ class Ui_MainWindow( QMainWindow ):
             self.thread.start()
             self.thread.change_current.connect(Update_Current)
         elif( page_number == Page.CAP_ON.value ):
+            self.Cap_Thread = Capacitor_Thread( ValvePins )
+            self.Cap_Thread.start()
             self.thread = Water_Sensor( CAP_Flow_Pins, 2, "CAP", 0.1 )
             self.thread.start()
             self.thread.change_current.connect(Update_Current)
-            BoardFunctions.Capacitor()
         elif( page_number == Page.IND_ON.value ):
             BoardFunctions.Inductor()
             self.thread = Water_Sensor( IND_Flow_Pins, 1, "IND", 0.1 )
