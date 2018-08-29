@@ -191,12 +191,11 @@ class Capacitor_Thread( QThread ):
 
 class LED_Control( QThread ):
     
-    
-    
-    # LED strip configuration
 
     def __init__(self):
+        # Used to inherit the code into the thread
         QThread.__init__(self)
+        # LED strip configuration
         self.LED_COUNT      = 177      # Number of LED pixels.
         self.LED_PIN        = 18      # GPIO pin connected to the pixels (18 uses PWM!).
         self.LED_FREQ_HZ    = 800000  # LED signal frequency in hertz (usually 800khz)
@@ -366,25 +365,29 @@ class LED_Control( QThread ):
     def __del__(self):
         self.wait()
 
+    def Turnoff(self):
+        self.strip.Color(0,0,0) # This should Turn off all of the LEDs during shutdown
+        time.sleep(0.1) # To make sure that shut down is done properly
+
     # What the thread is executing, this should always be running
     def run(self):
         self.strip.begin()
         while self._is_running == True:
             LED_Control.Idle_LED(self.strip)
-            '''
             self.thread.change_current.connect(Current, Type) # Does this place it in the variable??
             if Type == "Idle":
-                Idle_LED(strip)
+                LED_Control.Idle_LED(self.strip)
             elif Type == "KVL":
-                self.kVL(self.strip, Current)
-            elif Type == "KCL":
-                continue
+                LED_Control.kVL(self.strip, Current)
+            # elif Type == "KCL": # Not sure how to do this this one
             elif Type == "CAP":
-                continue
+                LED_Control.capacitorLEDs(self.strip) # This shouldn't need any feed back to control the flow as this is mostly constant
             elif Type == "IND":
-                continue
+                LED_Control.inductorLEDs(self.strip) # Should need any feedback as well as this will be nearly constant too.
+                                                     # Maybe we can make it so when it stops it will start draining???
             else:
-                Idle_LED(strip)  # If it is anything else put it in Idle mode (Default) '''
+                Idle_LED(strip)  # If it is anything else put it in Idle mode (Default) 
+                print("Went into else mode, change the Type: %s" % (Type)) # Used for debugging where the wrong type is being placed
 
 # Main thread (Controls all UI options)
 class Ui_MainWindow( QMainWindow ):
@@ -414,7 +417,7 @@ class Ui_MainWindow( QMainWindow ):
 
     def start( self, main_window ):
         page_number = main_window.stackedWidget.currentIndex()
-        # want this thread to be running at all times
+        # We want the LED thread to be running all the time (Can change this later if need be)
         self.LED_thread = LED_Control()
         self.LED_thread.start()
            
@@ -437,7 +440,7 @@ class Ui_MainWindow( QMainWindow ):
             elif Type == "CAP2":
                 main_window.Dynamic_Current_Capacitor_2.setText( HTML )
             else:
-                print("There was no \'Type\' found.")
+                print("There was no \'Type\' found. Type listed is: %s" % (Type))
                 return
 
         # If KVL section was selected, start the KVL pins and feedback thread
@@ -450,35 +453,38 @@ class Ui_MainWindow( QMainWindow ):
         elif( page_number == Page.KCL_ON.value ):
             # Three sperate threads running here for each of the flow sensors
             BoardFunctions.KCL()
-            self.thread1 = Water_Sensor( KCL_Flow_Pins[0], 1, "KCL", 0.2 )
+            self.thread = Water_Sensor( KCL_Flow_Pins[0], 1, "KCL", 0.2 )
+            self.thread.start()
+            self.thread.change_current.connect(Update_Current)
+            self.thread1 = Water_Sensor( KCL_Flow_Pins[1], 1, "KCL2", 0.2 )
             self.thread1.start()
             self.thread1.change_current.connect(Update_Current)
-            self.thread2 = Water_Sensor( KCL_Flow_Pins[1], 1, "KCL2", 0.2 )
+            self.thread2 = Water_Sensor( KCL_Flow_Pins[2], 1, "KCL3", 0.2 )
             self.thread2.start()
             self.thread2.change_current.connect(Update_Current)
-            self.thread3 = Water_Sensor( KCL_Flow_Pins[2], 1, "KCL3", 0.2 )
-            self.thread3.start()
-            self.thread3.change_current.connect(Update_Current)
         # If Capacitor section is selected, start the CAP thread (causes GUI lock if not on its own thread) and all sensor threads
         elif( page_number == Page.CAP_ON.value ):
             self.Cap_Thread = Capacitor_Thread( ValvePins )
             self.Cap_Thread.start()
-            self.thread1 = Water_Sensor( CAP_Flow_Pins[0], 1, "CAP", 0.1 )
+            self.thread = Water_Sensor( CAP_Flow_Pins[0], 1, "CAP", 0.1 )
+            self.thread.start()
+            self.thread.change_current.connect(Update_Current)
+            self.thread1 = Water_Sensor( CAP_Flow_Pins[1], 1, "CAP2", 0.1 )
             self.thread1.start()
             self.thread1.change_current.connect(Update_Current)
-            self.thread2 = Water_Sensor( CAP_Flow_Pins[1], 1, "CAP2", 0.1 )
-            self.thread2.start()
-            self.thread2.change_current.connect(Update_Current)
         # Inductor section not completed (waiting for hardware to be finished to work on this section)
         elif( page_number == Page.IND_ON.value ):
             BoardFunctions.Inductor()
             self.thread = Water_Sensor( IND_Flow_Pins, 1, "IND", 0.1 )
             self.thread.start()
             self.thread.change_current.connect(Update_Current)
-        # If no section is running, Run in Idle mode
+        # If no section is running, stop all threads and change into the Idle state by turning off shutting down pump and 
+        # setting LEDs to their proper location
         else:
             self.Stop_thread()
-            #self.Stop_LED_thread()
+            self.Stop_thread1()
+            self.Stop_thread2()
+            self.Stop_LED_thread()
             BoardFunctions.Idle_State()
             
     # Stops the thread safely (Will not stop thread otherwise, please leave in or there will be lots of issues)   
@@ -487,7 +493,28 @@ class Ui_MainWindow( QMainWindow ):
         self.thread.stop()
         self.thread.quit()
         self.thread.wait()
-     
+
+    # Exception will probably be raised if the thread did not exist
+    def Stop_thread1(self):
+        try:
+            self.thread1.stop()
+            self.thread1.quit()
+            self.thread1.wait()
+        except as e:
+            print("Exception Raised, %s" % (e))
+            break
+    
+    # Exception will probably be raised if the thread did not exist
+    def Stop_thread2(self):
+        try:
+            self.thread2.stop()
+            self.thread2.quit()
+            self.thread2.wait()
+        except as e:
+            print("Exception Raised, %s" % (e))
+            break
+    
+    # Used when shutting down the system (LEDs are always on)
     def Stop_LED_thread(self):
         self.LED_thread.stop()
         self.LED_thread.quit()
@@ -586,6 +613,7 @@ class Ui_MainWindow( QMainWindow ):
     # Turns off systems cleanly
     def terminate( self ):
         BoardFunctions.Turnoff()
+        LED_Control.Turnoff()
         sys.exit()
 
 # Enumerates the pages for ease of use
